@@ -2,65 +2,16 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from PIL import Image
 import json
-from datetime import datetime, timedelta
-from analyze_schedule import analyze_row, time_to_string, resize_image
-from icalendar import Calendar, Event
-import pytz
+from datetime import datetime
+import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-class ModernTheme:
-    
-    @staticmethod
-    def detect_system_theme():
-        try:
-            if sys.platform == "win32":
-                import winreg
-                registry = winreg.ConnectRegistry(None, winreg.HKEY_CURRENT_USER)
-                key = winreg.OpenKey(registry, r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
-                value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
-                winreg.CloseKey(key)
-                return value == 0  # 0 = dark mode, 1 = light mode
-        except:
-            pass
-        return False  # Default to light mode
-    
-    @staticmethod
-    def get_theme_colors(dark_mode=False):
-        if dark_mode:
-            return {
-                'bg': '#1e1e1e',
-                'fg': '#e0e0e0',
-                'secondary_bg': '#2d2d2d',
-                'input_bg': '#3c3c3c',
-                'input_fg': '#ffffff',
-                'button_bg': '#0e639c',
-                'button_hover': '#1177bb',
-                'button_fg': '#ffffff',
-                'accent': '#0e639c',
-                'border': '#3c3c3c',
-                'text_secondary': '#a0a0a0',
-                'success': '#4ec9b0',
-                'error': '#f48771',
-                'warning': '#ce9178'
-            }
-        else:
-            return {
-                'bg': '#f5f5f5',
-                'fg': '#2c2c2c',
-                'secondary_bg': '#ffffff',
-                'input_bg': '#ffffff',
-                'input_fg': '#000000',
-                'button_bg': '#0078d4',
-                'button_hover': '#106ebe',
-                'button_fg': '#ffffff',
-                'accent': '#0078d4',
-                'border': '#d0d0d0',
-                'text_secondary': '#707070',
-                'success': '#107c10',
-                'error': '#d13438',
-                'warning': '#ca5010'
-            }
+from analyze_schedule import analyze_row, time_to_string, resize_image
+from src.themes.theme_manager import ModernTheme
+from src.utils.calendar_export import CalendarExporter
+from src.utils.time_calculator import calculate_total_time, queue_sort_key
 
 
 class ScheduleAnalyzerUI:
@@ -111,6 +62,7 @@ class ScheduleAnalyzerUI:
         style.theme_use('clam')
         
         self.root.configure(bg=self.colors['bg'])
+        
         style.configure('Modern.TFrame', 
                        background=self.colors['bg'])
         
@@ -234,12 +186,10 @@ class ScheduleAnalyzerUI:
         y = (self.root.winfo_screenheight() // 2) - (height // 2)
         self.root.geometry(f'{width}x{height}+{x}+{y}')
 
-
     def create_widgets(self):
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
-        # Main container with modern styling
         main_frame = ttk.Frame(self.root, padding="30", style='Modern.TFrame')
         main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         main_frame.columnconfigure(0, weight=1)
@@ -362,28 +312,6 @@ class ScheduleAnalyzerUI:
         if filename:
             self.image_path.set(filename)
 
-    def calculate_total_time(self, outages):
-        total_minutes = 0
-        for outage in outages:
-            start_time = outage['start']
-            end_time = outage['end']
-            
-            start_hour, start_min = map(int, start_time.split(':'))
-            end_hour, end_min = map(int, end_time.split(':'))
-            
-            start_total_min = start_hour * 60 + start_min
-            end_total_min = end_hour * 60 + end_min
-            
-            if end_total_min == 0:
-                end_total_min = 24 * 60
-            
-            duration = end_total_min - start_total_min
-            total_minutes += duration
-        
-        hours = total_minutes // 60
-        minutes = total_minutes % 60
-        return hours, minutes, total_minutes
-
     def compare_all_queues(self):
         if not self.image_path.get():
             messagebox.showerror("Помилка", "Будь ласка, виберіть файл графіку!")
@@ -417,7 +345,7 @@ class ScheduleAnalyzerUI:
                     for start, end in outages
                 ] if outages else []
                 
-                hours, minutes, total_minutes = self.calculate_total_time(outage_list)
+                hours, minutes, total_minutes = calculate_total_time(outage_list)
                 
                 comparison_results.append({
                     "queue": queue_name,
@@ -426,18 +354,6 @@ class ScheduleAnalyzerUI:
                     "minutes": minutes,
                     "total_minutes": total_minutes
                 })
-            
-            def queue_sort_key(item):
-                queue_name = item['queue']
-                parts = queue_name.split()
-                if len(parts) >= 2:
-                    try:
-                        main_num = int(parts[1].split('-')[0])
-                        sub_num = int(parts[1].split('-')[1])
-                        return (main_num, sub_num)
-                    except:
-                        return (99, 99)
-                return (99, 99)
             
             comparison_results.sort(key=queue_sort_key)
             
@@ -541,7 +457,7 @@ class ScheduleAnalyzerUI:
             else:
                 results[queue_name] = []
 
-            hours, minutes, total_minutes = self.calculate_total_time(results[queue_name])
+            hours, minutes, total_minutes = calculate_total_time(results[queue_name])
             
             output = {
                 "date": formatted_date,
@@ -601,102 +517,6 @@ class ScheduleAnalyzerUI:
     def clear_result(self):
         self.result_text.delete('1.0', tk.END)
 
-    def auto_export_calendar(self, data, date_obj):
-        queue_name = data.get('queue', '')
-        outages = data.get('outages', [])
-
-        if not outages:
-            messagebox.showinfo("Успіх", "Аналіз завершено! Відключень не знайдено.")
-            return
-
-        try:
-            cal = Calendar()
-            cal.add('prodid', '-//Schedule Analyzer//UA')
-            cal.add('version', '2.0')
-            cal.add('x-wr-calname', f'Графік відключень - {queue_name}')
-            cal.add('x-wr-timezone', 'Europe/Kiev')
-
-            tz = pytz.timezone('Europe/Kiev')
-
-            for outage in outages:
-                start_time_str = outage['start']
-                end_time_str = outage['end']
-
-                start_hour, start_min = map(int, start_time_str.split(':'))
-                end_hour, end_min = map(int, end_time_str.split(':'))
-
-                start_dt = tz.localize(datetime.combine(
-                    date_obj.date(),
-                    datetime.min.time().replace(hour=start_hour, minute=start_min)
-                ))
-
-                if end_hour == 24 and end_min == 0:
-                    end_dt = tz.localize(datetime.combine(
-                        date_obj.date() + timedelta(days=1),
-                        datetime.min.time()
-                    ))
-                else:
-                    end_dt = tz.localize(datetime.combine(
-                        date_obj.date(),
-                        datetime.min.time().replace(hour=end_hour, minute=end_min)
-                    ))
-
-                event = Event()
-                event.add('summary', f'[!] Відключення електроенергії - {queue_name}')
-                event.add('dtstart', start_dt)
-                event.add('dtend', end_dt)
-                event.add('description',
-                         f'Планове відключення електроенергії\n'
-                         f'Черга: {queue_name}\n'
-                         f'Час: {start_time_str} - {end_time_str}')
-                event.add('location', 'Україна')
-                event.add('status', 'CONFIRMED')
-
-                from icalendar import Alarm
-
-                alarm_15 = Alarm()
-                alarm_15.add('action', 'DISPLAY')
-                alarm_15.add('description', f'[!] Відключення через 15 хвилин - {queue_name}')
-                alarm_15.add('trigger', timedelta(minutes=-15))
-                event.add_component(alarm_15)
-
-                alarm_5 = Alarm()
-                alarm_5.add('action', 'DISPLAY')
-                alarm_5.add('description', f'[!] Відключення через 5 хвилин - {queue_name}')
-                alarm_5.add('trigger', timedelta(minutes=-5))
-                event.add_component(alarm_5)
-
-                cal.add_component(event)
-
-            filename = filedialog.asksaveasfilename(
-                defaultextension=".ics",
-                filetypes=[("iCalendar files", "*.ics"), ("All files", "*.*")],
-                initialfile=f"outages_{queue_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.ics",
-                title="Зберегти календар"
-            )
-
-            if filename:
-                with open(filename, 'wb') as f:
-                    f.write(cal.to_ical())
-
-                import os
-                try:
-                    os.startfile(filename)
-                    messagebox.showinfo("Успіх",
-                                   f"Календар збережено та відкрито!\n\n"
-                                   f"Файл: {filename}\n"
-                                   f"Події: {len(outages)}")
-                except Exception as e:
-                    messagebox.showinfo("Успіх",
-                                      f"Календар збережено!\n\n"
-                                      f"Файл: {filename}\n"
-                                      f"Події: {len(outages)}")
-            else:
-                messagebox.showinfo("Інформація", "Аналіз завершено! Календар не збережено.")
-
-        except Exception as e:
-            messagebox.showerror("Помилка", f"Помилка експорту календаря:\n{str(e)}")
-
     def export_calendar(self):
         result = self.result_text.get('1.0', tk.END).strip()
         if not result:
@@ -715,63 +535,6 @@ class ScheduleAnalyzerUI:
 
             date_obj = datetime.strptime(date_str, '%d.%m.%Y')
 
-            cal = Calendar()
-            cal.add('prodid', '-//Schedule Analyzer//UA')
-            cal.add('version', '2.0')
-            cal.add('x-wr-calname', f'Графік відключень - {queue_name}')
-            cal.add('x-wr-timezone', 'Europe/Kiev')
-
-            tz = pytz.timezone('Europe/Kiev')
-
-            for outage in outages:
-                start_time_str = outage['start']
-                end_time_str = outage['end']
-
-                start_hour, start_min = map(int, start_time_str.split(':'))
-                end_hour, end_min = map(int, end_time_str.split(':'))
-
-                start_dt = tz.localize(datetime.combine(
-                    date_obj.date(),
-                    datetime.min.time().replace(hour=start_hour, minute=start_min)
-                ))
-
-                if end_hour == 24 and end_min == 0:
-                    end_dt = tz.localize(datetime.combine(
-                        date_obj.date() + timedelta(days=1),
-                        datetime.min.time()
-                    ))
-                else:
-                    end_dt = tz.localize(datetime.combine(
-                        date_obj.date(),
-                        datetime.min.time().replace(hour=end_hour, minute=end_min)
-                    ))
-
-                event = Event()
-                event.add('summary', f'[!] Відключення електроенергії - {queue_name}')
-                event.add('dtstart', start_dt)
-                event.add('dtend', end_dt)
-                event.add('description',
-                         f'Планове відключення електроенергії\n'
-                         f'Черга: {queue_name}\n'
-                         f'Час: {start_time_str} - {end_time_str}')
-                event.add('location', 'Україна')
-                event.add('status', 'CONFIRMED')
-
-                from icalendar import Alarm
-                alarm_15 = Alarm()
-                alarm_15.add('action', 'DISPLAY')
-                alarm_15.add('description', f'[!] Відключення через 15 хвилин - {queue_name}')
-                alarm_15.add('trigger', timedelta(minutes=-15))
-                event.add_component(alarm_15)
-
-                alarm_5 = Alarm()
-                alarm_5.add('action', 'DISPLAY')
-                alarm_5.add('description', f'[!] Відключення через 5 хвилин - {queue_name}')
-                alarm_5.add('trigger', timedelta(minutes=-5))
-                event.add_component(alarm_5)
-
-                cal.add_component(event)
-
             filename = filedialog.asksaveasfilename(
                 defaultextension=".ics",
                 filetypes=[("iCalendar files", "*.ics"), ("All files", "*.*")],
@@ -779,33 +542,24 @@ class ScheduleAnalyzerUI:
             )
 
             if filename:
-                with open(filename, 'wb') as f:
-                    f.write(cal.to_ical())
-
-                import os
-                try:
-                    os.startfile(filename)
-                    messagebox.showinfo("Успіх",
-                                   f"Календар експортовано та відкрито!\n\n"
-                                   f"Файл: {filename}\n"
-                                   f"Події: {len(outages)}")
-                except Exception as e:
-                    messagebox.showinfo("Успіх",
-                                      f"Календар експортовано!\n\n"
-                                      f"Файл: {filename}\n"
-                                      f"Події: {len(outages)}")
+                success, message = CalendarExporter.export_to_ics(data, date_obj, filename)
+                
+                if success:
+                    try:
+                        os.startfile(filename)
+                        messagebox.showinfo("Успіх",
+                                       f"Календар експортовано та відкрито!\n\n"
+                                       f"Файл: {filename}\n"
+                                       f"Події: {len(outages)}")
+                    except Exception:
+                        messagebox.showinfo("Успіх",
+                                          f"Календар експортовано!\n\n"
+                                          f"Файл: {filename}\n"
+                                          f"Події: {len(outages)}")
+                else:
+                    messagebox.showerror("Помилка", f"Помилка експорту:\n{message}")
 
         except json.JSONDecodeError:
             messagebox.showerror("Помилка", "Невірний формат JSON результату!")
         except Exception as e:
             messagebox.showerror("Помилка", f"Помилка експорту календаря:\n{str(e)}")
-
-
-def main():
-    root = tk.Tk()
-    app = ScheduleAnalyzerUI(root)
-    root.mainloop()
-
-
-if __name__ == "__main__":
-    main()
