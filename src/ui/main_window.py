@@ -538,7 +538,7 @@ class ScheduleAnalyzerUI:
             filename = filedialog.asksaveasfilename(
                 defaultextension=".ics",
                 filetypes=[("iCalendar files", "*.ics"), ("All files", "*.*")],
-                initialfile=f"outages_{queue_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.ics"
+                initialfile=f"outages_{queue_name.replace(' ', '_')}_{date_obj.strftime('%Y%m%d')}.ics"
             )
 
             if filename:
